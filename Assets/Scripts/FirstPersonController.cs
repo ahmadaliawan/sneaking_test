@@ -43,6 +43,33 @@ public class FirstPersonController : MonoBehaviour
     private float _verticalRotation = 0.0f;
     private bool _isCrouching = false;
     private float _originalCameraY;
+    private bool _isSprinting = false;
+
+    [Header("Sprint Camera Shake")]
+    [Tooltip("How far the camera bobs vertically while sprinting.")]
+    public float sprintBobAmplitudeY = 0.06f;
+    [Tooltip("How far the camera bobs sideways while sprinting.")]
+    public float sprintBobAmplitudeX = 0.03f;
+    [Tooltip("Speed of the bob cycle while sprinting.")]
+    public float sprintBobFrequency = 12f;
+    [Tooltip("How quickly the shake blends in/out.")]
+    public float sprintBobSmoothing = 8f;
+
+    private float _sprintBobTimer = 0f;
+    private float _sprintBobBlend = 0f;  // 0 = no shake, 1 = full shake
+    private Vector3 _baseCameraLocalPos;
+
+    [Header("Landing Camera Shake")]
+    [Tooltip("How far the camera dips down on landing.")]
+    public float landingShakeAmplitude = 0.12f;
+    [Tooltip("How quickly the camera recovers from a landing dip.")]
+    public float landingShakeRecovery = 10f;
+    [Tooltip("Minimum downward speed to trigger a landing shake.")]
+    public float landingShakeThreshold = 3f;
+
+    private bool _wasGrounded = true;
+    private float _fallVelocity = 0f;       // Tracks downward speed while airborne
+    private float _landingShakeOffset = 0f; // Current Y offset applied by landing shake
 
     private void Start()
     {
@@ -65,6 +92,7 @@ public class FirstPersonController : MonoBehaviour
         if (playerCamera != null)
         {
             _originalCameraY = playerCamera.localPosition.y;
+            _baseCameraLocalPos = playerCamera.localPosition;
         }
 
         // Lock cursor to the center of the screen and hide it for clean playtesting
@@ -77,6 +105,8 @@ public class FirstPersonController : MonoBehaviour
         HandleMouseLook();
         HandleMovement();
         HandleCrouch();
+        HandleSprintShake();
+        HandleLandingShake();
     }
 
     /// <summary>
@@ -181,6 +211,28 @@ public class FirstPersonController : MonoBehaviour
             speed *= sprintMultiplier;
         }
 
+        // Track sprint state for camera shake
+        _isSprinting = isSprinting && isGrounded && move.sqrMagnitude > 0.01f;
+
+        // Track fall velocity and detect landing
+        if (!isGrounded)
+        {
+            // Record how fast we're falling (use negative velocity for magnitude)
+            _fallVelocity = Mathf.Abs(_velocity.y);
+        }
+        else if (!_wasGrounded)
+        {
+            // We just landed this frame — trigger shake if we fell fast enough
+            if (_fallVelocity >= landingShakeThreshold)
+            {
+                // Scale shake strength with fall speed, clamped to max amplitude
+                float strength = Mathf.Clamp01(_fallVelocity / 15f);
+                _landingShakeOffset = -landingShakeAmplitude * strength;
+            }
+            _fallVelocity = 0f;
+        }
+        _wasGrounded = isGrounded;
+
         // Move the CharacterController along horizontal plane
         _controller.Move(move * speed * Time.deltaTime);
 
@@ -196,6 +248,62 @@ public class FirstPersonController : MonoBehaviour
 
         // Move CharacterController vertically (gravity/jumping)
         _controller.Move(_velocity * Time.deltaTime);
+    }
+
+    /// <summary>
+    /// Applies a subtle head-bob shake to the camera while the player is sprinting.
+    /// Uses a sine wave on X and Y axes, smoothly blended in and out.
+    /// </summary>
+    private void HandleSprintShake()
+    {
+        if (playerCamera == null) return;
+
+        // Blend the shake weight smoothly in (sprinting) or out (not sprinting)
+        float targetBlend = _isSprinting ? 1f : 0f;
+        _sprintBobBlend = Mathf.Lerp(_sprintBobBlend, targetBlend, Time.deltaTime * sprintBobSmoothing);
+
+        if (_sprintBobBlend > 0.001f)
+        {
+            _sprintBobTimer += Time.deltaTime * sprintBobFrequency;
+
+            // Vertical bob (up-down) — full sine wave
+            float bobY = Mathf.Sin(_sprintBobTimer) * sprintBobAmplitudeY * _sprintBobBlend;
+            // Horizontal bob (side-to-side) — half-frequency for a natural feel
+            float bobX = Mathf.Sin(_sprintBobTimer * 0.5f) * sprintBobAmplitudeX * _sprintBobBlend;
+
+            // Apply offset on top of the base camera position (HandleCrouch manages Y, so we ADD to it)
+            Vector3 camPos = playerCamera.localPosition;
+            camPos.x = _baseCameraLocalPos.x + bobX;
+            // Only override Y if crouch is not actively transitioning (blend check)
+            camPos.y += bobY;
+            playerCamera.localPosition = camPos;
+        }
+        else
+        {
+            // Reset timer when not shaking to avoid phase pop on next sprint
+            _sprintBobTimer = 0f;
+        }
+    }
+
+    /// <summary>
+    /// Applies a one-shot downward camera dip when the player lands after a jump.
+    /// Shake strength scales with how fast the player was falling.
+    /// </summary>
+    private void HandleLandingShake()
+    {
+        if (playerCamera == null || Mathf.Abs(_landingShakeOffset) < 0.0005f)
+        {
+            _landingShakeOffset = 0f;
+            return;
+        }
+
+        // Spring the offset back toward zero each frame
+        _landingShakeOffset = Mathf.Lerp(_landingShakeOffset, 0f, Time.deltaTime * landingShakeRecovery);
+
+        // Apply directly as a Y nudge on the camera local position
+        Vector3 camPos = playerCamera.localPosition;
+        camPos.y += _landingShakeOffset;
+        playerCamera.localPosition = camPos;
     }
 
     /// <summary>
