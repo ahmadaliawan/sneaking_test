@@ -38,10 +38,26 @@ public class FirstPersonController : MonoBehaviour
     [Tooltip("Speed at which the character controller height transitions.")]
     public float crouchTransitionSpeed = 8.0f;
 
+    [Header("Slide Settings")]
+    [Tooltip("Initial speed burst when starting a slide.")]
+    public float slideInitialSpeed = 12.0f;
+    [Tooltip("How fast the slide speed decays.")]
+    public float slideFriction = 7.0f;
+    [Tooltip("Height of the character controller when sliding.")]
+    public float slideHeight = 0.5f;
+    [Tooltip("Camera roll angle (tilt) during a slide.")]
+    public float slideCameraTilt = -5.0f;
+    [Tooltip("How fast the camera tilts during a slide.")]
+    public float slideTiltSpeed = 10.0f;
+
     private CharacterController _controller;
     private Vector3 _velocity;
     private float _verticalRotation = 0.0f;
+    private float _cameraRoll = 0.0f;
     private bool _isCrouching = false;
+    private bool _isSliding = false;
+    private Vector3 _slideDirection;
+    private float _currentSlideSpeed;
     private float _originalCameraY;
     private bool _isSprinting = false;
 
@@ -137,7 +153,12 @@ public class FirstPersonController : MonoBehaviour
         // Pitch rotation (up/down) - clamped to prevent flipping upside down
         _verticalRotation -= mouseY;
         _verticalRotation = Mathf.Clamp(_verticalRotation, minLookAngle, maxLookAngle);
-        playerCamera.localRotation = Quaternion.Euler(_verticalRotation, 0.0f, 0.0f);
+        
+        // Handle Camera Roll for sliding
+        float targetRoll = _isSliding ? slideCameraTilt : 0f;
+        _cameraRoll = Mathf.Lerp(_cameraRoll, targetRoll, Time.deltaTime * slideTiltSpeed);
+
+        playerCamera.localRotation = Quaternion.Euler(_verticalRotation, 0.0f, _cameraRoll);
 
         // Yaw rotation (left/right) - rotates the entire player body
         transform.Rotate(Vector3.up * mouseX);
@@ -160,6 +181,7 @@ public class FirstPersonController : MonoBehaviour
         float moveZ = 0f;
         bool isSprinting = false;
         bool jumpPressed = false;
+        bool slidePressed = false;
 
 #if ENABLE_INPUT_SYSTEM
         var keyboard = Keyboard.current;
@@ -173,6 +195,7 @@ public class FirstPersonController : MonoBehaviour
             isSprinting = keyboard.leftShiftKey.isPressed;
             _isCrouching = keyboard.leftCtrlKey.isPressed;
             jumpPressed = keyboard.spaceKey.wasPressedThisFrame;
+            slidePressed = keyboard.cKey.wasPressedThisFrame;
         }
 #else
         moveX = Input.GetAxis("Horizontal");
@@ -189,30 +212,61 @@ public class FirstPersonController : MonoBehaviour
         }
 
         jumpPressed = Input.GetButtonDown("Jump");
+        slidePressed = Input.GetKeyDown(KeyCode.C);
 #endif
 
-        // Calculate direction relative to the player's current orientation
-        Vector3 move = transform.right * moveX + transform.forward * moveZ;
-        
-        // Normalize vector to ensure uniform movement speed in diagonal directions
-        if (move.sqrMagnitude > 1f)
-        {
-            move.Normalize();
-        }
+        Vector3 move;
+        float speed;
 
-        // Calculate speed with active modifiers
-        float speed = walkSpeed;
-        if (_isCrouching)
+        if (_isSliding)
         {
-            speed *= crouchMultiplier;
-        }
-        else if (isSprinting)
-        {
-            speed *= sprintMultiplier;
-        }
+            // During slide, movement is locked to slide direction, and speed decays
+            _currentSlideSpeed -= slideFriction * Time.deltaTime;
+            move = _slideDirection;
+            speed = _currentSlideSpeed;
 
-        // Track sprint state for camera shake
-        _isSprinting = isSprinting && isGrounded && move.sqrMagnitude > 0.01f;
+            // Stop sliding if speed drops enough, or if we jump
+            if (_currentSlideSpeed <= crouchMultiplier * walkSpeed || jumpPressed)
+            {
+                _isSliding = false;
+                _isCrouching = true; // Transition smoothly into a crouch after sliding
+            }
+            _isSprinting = false;
+        }
+        else
+        {
+            // Calculate direction relative to the player's current orientation
+            move = transform.right * moveX + transform.forward * moveZ;
+            
+            // Normalize vector to ensure uniform movement speed in diagonal directions
+            if (move.sqrMagnitude > 1f)
+            {
+                move.Normalize();
+            }
+
+            // Calculate speed with active modifiers
+            speed = walkSpeed;
+            if (_isCrouching)
+            {
+                speed *= crouchMultiplier;
+            }
+            else if (isSprinting)
+            {
+                speed *= sprintMultiplier;
+            }
+
+            // Track sprint state for camera shake
+            _isSprinting = isSprinting && isGrounded && move.sqrMagnitude > 0.01f;
+
+            // Trigger slide if sprinting, moving, and pressing C
+            if (slidePressed && _isSprinting && isGrounded)
+            {
+                _isSliding = true;
+                _slideDirection = move;
+                _currentSlideSpeed = slideInitialSpeed;
+                speed = _currentSlideSpeed;
+            }
+        }
 
         // Track fall velocity and detect landing
         if (!isGrounded)
@@ -312,7 +366,10 @@ public class FirstPersonController : MonoBehaviour
     private void HandleCrouch()
     {
         // Interpolate character controller height
-        float targetHeight = _isCrouching ? crouchHeight : standingHeight;
+        float targetHeight = standingHeight;
+        if (_isSliding) targetHeight = slideHeight;
+        else if (_isCrouching) targetHeight = crouchHeight;
+        
         _controller.height = Mathf.Lerp(_controller.height, targetHeight, Time.deltaTime * crouchTransitionSpeed);
 
         // Interpolate camera height dynamically to match controller bounds
