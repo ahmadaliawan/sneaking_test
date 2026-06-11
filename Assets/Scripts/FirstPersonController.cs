@@ -44,7 +44,7 @@ public class FirstPersonController : MonoBehaviour
     [Tooltip("How fast the slide speed decays.")]
     public float slideFriction = 7.0f;
     [Tooltip("Height of the character controller when sliding.")]
-    public float slideHeight = 0.5f;
+    public float slideHeight = 1.0f;
     [Tooltip("Camera roll angle (tilt) during a slide.")]
     public float slideCameraTilt = -5.0f;
     [Tooltip("How fast the camera tilts during a slide.")]
